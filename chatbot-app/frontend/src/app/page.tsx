@@ -124,7 +124,7 @@ function ChatInterface() {
       e.preventDefault()
       if (!isTyping && (inputMessage.trim() || selectedFiles.length > 0)) {
         const syntheticEvent = {
-          preventDefault: () => {},
+          preventDefault: () => { },
         } as React.FormEvent
         handleSendMessage(syntheticEvent, selectedFiles)
         setSelectedFiles([])
@@ -221,7 +221,7 @@ function ChatInterface() {
             onQuestionSubmit={async (question) => {
               setInputMessage(question)
               const syntheticEvent = {
-                preventDefault: () => {},
+                preventDefault: () => { },
                 target: { elements: { message: { value: question } } },
               } as any
               await handleSendMessage(syntheticEvent, [])

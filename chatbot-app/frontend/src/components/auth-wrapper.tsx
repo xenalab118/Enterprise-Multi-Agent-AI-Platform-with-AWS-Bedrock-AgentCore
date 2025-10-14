@@ -2,7 +2,6 @@
 
 import { Authenticator } from '@aws-amplify/ui-react';
 import '@aws-amplify/ui-react/styles.css';
-import '../lib/amplify-config'; // Initialize Amplify
 import { useEffect, useState } from 'react';
 
 export default function AuthWrapper({
@@ -14,13 +13,16 @@ export default function AuthWrapper({
   const [hasCognitoConfig, setHasCognitoConfig] = useState(false);
 
   useEffect(() => {
+    // Initialize Amplify config on client side
+    import('../lib/amplify-config');
+
     // Check if we're in local development
     const localDev = typeof window !== 'undefined' &&
       (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
     // Check if Cognito config is available
     const cognitoConfig = !!(process.env.NEXT_PUBLIC_COGNITO_USER_POOL_ID &&
-                             process.env.NEXT_PUBLIC_COGNITO_USER_POOL_CLIENT_ID);
+      process.env.NEXT_PUBLIC_COGNITO_USER_POOL_CLIENT_ID);
 
     setIsLocalDev(localDev);
     setHasCognitoConfig(cognitoConfig);
