@@ -504,6 +504,9 @@ async function sendResponse(event, status, data, reason) {
         AWS_DEFAULT_REGION: this.region,
         AWS_REGION: this.region,
         CHART_STORAGE_BUCKET: chartBucket.bucketName,
+        // Workaround for OTEL botocore instrumentation bug (fixed in next ADOT release)
+        // See: https://sim.amazon.com/issues/apm-telegen-2758
+        OTEL_PYTHON_DISABLED_INSTRUMENTATIONS: 'boto,botocore',
       },
 
       tags: {
