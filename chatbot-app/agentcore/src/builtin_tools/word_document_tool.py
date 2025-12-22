@@ -1,13 +1,13 @@
 """
-Word Document Tools - 5 essential tools for Word document management.
+Word Document Tools - 4 essential tools for Word document management.
 
 Tools:
-1. store_word_document - Save uploaded Word files to workspace
-2. create_word_document - Create new Word document from Markdown
-3. modify_word_document - Modify existing Word document with python-docx code
-4. list_my_word_documents - List all Word documents in workspace
-5. get_word_document - Retrieve document for download
+1. create_word_document - Create new Word document from Python code
+2. modify_word_document - Modify existing Word document with python-docx code
+3. list_my_word_documents - List all Word documents in workspace
+4. read_word_document - Retrieve document for download
 
+Note: Uploaded .docx files are automatically stored to workspace by agent.py
 Pattern follows diagram_tool for Code Interpreter usage.
 """
 
@@ -141,50 +141,59 @@ def _get_user_session_ids(tool_context: ToolContext) -> tuple[str, str]:
     return user_id, session_id
 
 
-def _extract_uploaded_docx_files(tool_context: ToolContext) -> list[tuple[str, bytes]]:
-    """Extract uploaded .docx files from ToolContext
+def _load_workspace_images_to_ci(code_interpreter: CodeInterpreter, user_id: str, session_id: str) -> list[str]:
+    """Load all images from S3 workspace to Code Interpreter
+
+    This replaces the old invocation_state approach with S3-based storage.
+    Images are now stored in S3 workspace and loaded on-demand when tools execute.
+
+    Args:
+        code_interpreter: Active CodeInterpreter instance
+        user_id: User ID for S3 workspace path
+        session_id: Session ID for S3 workspace path
 
     Returns:
-        List of (filename, file_bytes) tuples for .docx files
+        List of loaded image filenames
     """
-    uploaded_files = []
+    from .lib.document_manager import ImageDocumentManager
 
-    # Check if files were uploaded in this invocation
-    invocation_state = tool_context.invocation_state
-    files = invocation_state.get('uploaded_files', [])
+    try:
+        # Initialize image document manager
+        image_manager = ImageDocumentManager(user_id, session_id)
 
-    for file_info in files:
-        filename = file_info.get('filename', '')
-        if filename.endswith('.docx'):
-            file_bytes = file_info.get('bytes')
-            if file_bytes:
-                uploaded_files.append((filename, file_bytes))
-                logger.info(f"Found uploaded .docx file: {filename} ({len(file_bytes)} bytes)")
+        # List all images from S3 workspace
+        images = image_manager.list_s3_documents()
 
-    return uploaded_files
+        if not images:
+            logger.info("No images found in workspace")
+            return []
 
+        logger.info(f"Found {len(images)} image(s) in workspace: {[img['filename'] for img in images]}")
 
-def _extract_uploaded_image_files(tool_context: ToolContext) -> list[tuple[str, bytes]]:
-    """Extract uploaded image files from ToolContext
+        # Load each image from S3 and upload to Code Interpreter
+        loaded_filenames = []
+        for image_info in images:
+            try:
+                filename = image_info['filename']
 
-    Returns:
-        List of (filename, file_bytes) tuples for image files (.png, .jpg, .jpeg, .gif)
-    """
-    uploaded_images = []
+                # Load image bytes from S3
+                file_bytes = image_manager.load_from_s3(filename)
 
-    # Check if files were uploaded in this invocation
-    invocation_state = tool_context.invocation_state
-    files = invocation_state.get('uploaded_files', [])
+                # Upload to Code Interpreter using existing helper
+                _upload_images_to_ci(code_interpreter, [(filename, file_bytes)])
 
-    for file_info in files:
-        filename = file_info.get('filename', '')
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
-            file_bytes = file_info.get('bytes')
-            if file_bytes:
-                uploaded_images.append((filename, file_bytes))
-                logger.info(f"Found uploaded image file: {filename} ({len(file_bytes)} bytes)")
+                loaded_filenames.append(filename)
+                logger.info(f"✅ Loaded image from S3 workspace: {filename}")
 
-    return uploaded_images
+            except Exception as e:
+                logger.error(f"Failed to load image {filename} from workspace: {e}")
+                continue
+
+        return loaded_filenames
+
+    except Exception as e:
+        logger.error(f"Failed to load workspace images: {e}")
+        return []
 
 
 def _upload_images_to_ci(code_interpreter: CodeInterpreter, images: list[tuple[str, bytes]]) -> list[str]:
@@ -240,179 +249,6 @@ print(f"Image uploaded: {filename} ({{len(file_bytes)}} bytes)")
 
 
 @tool(context=True)
-def store_word_document(
-    tool_context: ToolContext,
-    custom_filename: Optional[str] = None
-) -> Dict[str, Any]:
-    """Save uploaded Word document(s) to your workspace for editing and persistence.
-
-    This tool detects .docx files uploaded in the conversation and saves them to:
-    1. Code Interpreter session (for immediate editing)
-    2. S3 storage (for persistence across sessions)
-
-    IMPORTANT: When user uploads .docx file, call this tool first (uploaded files only available in current turn).
-
-    Use this tool when:
-    - User uploads a Word file
-    - User says "save this file", "store this document"
-
-    Args:
-        custom_filename: Optional. Rename the file when saving (single file only).
-                        Must end with .docx
-                        Example: "quarterly_report.docx"
-
-                        Leave empty to use original filename.
-
-    Returns:
-        Success message with:
-        - List of saved files with sizes
-        - Current workspace file list (for context)
-        - Metadata for frontend download buttons
-
-    Example Usage:
-        # Save uploaded file
-        User: [uploads report.docx] "Edit this"
-        AI: store_word_document()
-        AI: modify_word_document(...)
-
-        # Rename while saving
-        User: [uploads old.docx] "Save as 'new.docx'"
-        AI: store_word_document(custom_filename="new.docx")
-
-    Note:
-        - Automatically detects all .docx files from uploaded files
-        - Single file can be renamed with custom_filename
-        - Files available for modification after saving
-    """
-    try:
-        logger.info("=== store_word_document called ===")
-
-        # Get user and session IDs
-        user_id, session_id = _get_user_session_ids(tool_context)
-
-        # Initialize document manager
-        doc_manager = WordDocumentManager(user_id, session_id)
-
-        # Extract uploaded .docx files
-        uploaded_files = _extract_uploaded_docx_files(tool_context)
-
-        if not uploaded_files:
-            return {
-                "content": [{
-                    "text": "❌ **No Word documents found**\n\nPlease upload one or more .docx files to save them to your workspace."
-                }],
-                "status": "error"
-            }
-
-        # Validate custom_filename if provided
-        if custom_filename:
-            if len(uploaded_files) > 1:
-                return {
-                    "content": [{
-                        "text": f"❌ **Cannot rename multiple files**\n\nYou uploaded {len(uploaded_files)} files, but custom_filename can only be used with a single file."
-                    }],
-                    "status": "error"
-                }
-
-            # Validate .docx extension
-            if not custom_filename.endswith('.docx'):
-                return {
-                    "content": [{
-                        "text": f"❌ **Invalid filename**\n\nFilename must end with .docx: {custom_filename}"
-                    }],
-                    "status": "error"
-                }
-
-        # Get Code Interpreter
-        code_interpreter_id = _get_code_interpreter_id()
-        if not code_interpreter_id:
-            return {
-                "content": [{
-                    "text": "❌ **Code Interpreter not configured**\n\nCODE_INTERPRETER_ID not found in environment or Parameter Store."
-                }],
-                "status": "error"
-            }
-
-        region = os.getenv('AWS_REGION', 'us-west-2')
-        code_interpreter = CodeInterpreter(region)
-        code_interpreter.start(identifier=code_interpreter_id)
-
-        try:
-            saved_files = []
-
-            # Save each file
-            for original_filename, file_bytes in uploaded_files:
-                # Use custom filename if provided (single file case)
-                filename = custom_filename if custom_filename else original_filename
-
-                # Sync to both S3 and Code Interpreter
-                sync_result = doc_manager.sync_to_both(
-                    code_interpreter,
-                    filename,
-                    file_bytes,
-                    metadata={'original_filename': original_filename}
-                )
-
-                saved_files.append({
-                    'filename': filename,
-                    'size_kb': sync_result['s3_info']['size_kb'],
-                    'original_filename': original_filename
-                })
-
-                logger.info(f"✅ Saved: {filename} ({sync_result['s3_info']['size_kb']})")
-
-            # Get current workspace list
-            workspace_docs = doc_manager.list_s3_documents()
-            workspace_summary = doc_manager.format_file_list(workspace_docs)
-
-            # Build response message
-            if len(saved_files) == 1:
-                file_info = saved_files[0]
-                renamed = " (renamed)" if custom_filename else ""
-                message = f"""✅ **Document saved successfully**{renamed}
-
-**File**: {file_info['filename']} ({file_info['size_kb']})
-
-{workspace_summary}"""
-            else:
-                files_list = "\n".join([f"  - {f['filename']} ({f['size_kb']})" for f in saved_files])
-                message = f"""✅ **{len(saved_files)} documents saved successfully**
-
-{files_list}
-
-{workspace_summary}"""
-
-            # Prepare metadata for frontend (download buttons)
-            metadata = {
-                "saved_files": [
-                    {
-                        "filename": f['filename'],
-                        "s3_key": doc_manager.get_s3_key(f['filename']),
-                        "size_kb": f['size_kb']
-                    } for f in saved_files
-                ]
-            }
-
-            return {
-                "content": [{"text": message}],
-                "status": "success",
-                "metadata": metadata
-            }
-
-        finally:
-            code_interpreter.stop()
-
-    except Exception as e:
-        logger.error(f"store_word_document failed: {e}")
-        return {
-            "content": [{
-                "text": f"❌ **Failed to save document(s)**\n\n{str(e)}"
-            }],
-            "status": "error"
-        }
-
-
-@tool(context=True)
 def create_word_document(
     python_code: str,
     document_name: str,
@@ -437,8 +273,8 @@ def create_word_document(
 
                     DO NOT include Document() initialization or doc.save() calls.
 
-                    IMPORTANT: Uploaded images are automatically available in Code Interpreter.
-                    If user uploads image.png, you can directly use it: doc.add_picture('image.png')
+                    Uploaded images are automatically available in Code Interpreter.
+                    Use os.listdir() to discover available image files.
 
                     Common Patterns:
 
@@ -477,12 +313,22 @@ doc.add_paragraph('Figure 1: Sales performance')
                     With Uploaded Image:
                     ```python
 from docx.shared import Inches
+import os
 
 doc.add_heading('Product Catalog', level=1)
 doc.add_paragraph('Our new product line:')
 
-# User uploaded 'product.png' - directly use it
-doc.add_paragraph().add_run().add_picture('product.png', width=Inches(5))
+# Discover available images
+available_images = [f for f in os.listdir() if f.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp'))]
+
+if available_images:
+    # Use the first image (or select specific one by filename matching)
+    image_file = available_images[0]
+    doc.add_paragraph().add_run().add_picture(image_file, width=Inches(5))
+    doc.add_paragraph(f'Figure: {image_file}')
+else:
+    # No images found - add placeholder
+    doc.add_paragraph('[No images available in workspace]')
                     ```
 
                     With Hyperlinks:
@@ -562,11 +408,10 @@ doc.add_paragraph('Summary text...')
         code_interpreter.start(identifier=code_interpreter_id)
 
         try:
-            # Extract and upload images if any
-            uploaded_images = _extract_uploaded_image_files(tool_context)
-            if uploaded_images:
-                uploaded_filenames = _upload_images_to_ci(code_interpreter, uploaded_images)
-                logger.info(f"Uploaded {len(uploaded_filenames)} images to Code Interpreter: {uploaded_filenames}")
+            # Load all workspace images from S3 to Code Interpreter
+            loaded_images = _load_workspace_images_to_ci(code_interpreter, user_id, session_id)
+            if loaded_images:
+                logger.info(f"Loaded {len(loaded_images)} image(s) from workspace: {loaded_images}")
 
             # Get Code Interpreter path for file (filename only, no subdirectory)
             ci_path = doc_manager.get_ci_path(document_filename)
@@ -637,7 +482,9 @@ print(f"Document created: {ci_path}")
                 "status": "success",
                 "metadata": {
                     "filename": document_filename,
-                    "tool_type": "word_document"
+                    "tool_type": "word_document",
+                    "user_id": user_id,
+                    "session_id": session_id
                 }
             }
 
@@ -690,8 +537,8 @@ def modify_word_document(
 
                     DO NOT include Document() initialization or doc.save() calls.
 
-                    IMPORTANT: Uploaded images are automatically available in Code Interpreter.
-                    If user uploads diagram.png, you can directly use it in your code.
+                    Uploaded images are automatically available in Code Interpreter.
+                    Use os.listdir() to discover available image files.
 
                     Common Patterns:
 
@@ -715,14 +562,29 @@ for para in doc.paragraphs:
         break
                     ```
 
-                    Insert Uploaded Image at Specific Location:
+                    Insert Uploaded Image:
                     ```python
 from docx.shared import Inches
+import os
 
-# User uploaded 'diagram.png' - insert after paragraph 5
-if len(doc.paragraphs) > 5:
-    para = doc.paragraphs[5]
-    para.add_run().add_picture('diagram.png', width=Inches(6))
+# Discover available images
+available_images = [f for f in os.listdir() if f.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp'))]
+
+if available_images:
+    # Use the first image (or select specific one by filename matching)
+    image_file = available_images[0]
+
+    # Add new paragraph with image
+    para = doc.add_paragraph()
+    run = para.add_run()
+    run.add_picture(image_file, width=Inches(6.5))
+
+    # Add caption
+    caption = doc.add_paragraph(f'Figure: {image_file}')
+    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+else:
+    # No images found - add placeholder text
+    doc.add_paragraph('[Image placeholder - no images found in workspace]')
                     ```
 
                     Add Hyperlink:
@@ -825,11 +687,10 @@ if len(doc.paragraphs) > 0:
         code_interpreter.start(identifier=code_interpreter_id)
 
         try:
-            # Extract and upload images if any
-            uploaded_images = _extract_uploaded_image_files(tool_context)
-            if uploaded_images:
-                uploaded_filenames = _upload_images_to_ci(code_interpreter, uploaded_images)
-                logger.info(f"Uploaded {len(uploaded_filenames)} images to Code Interpreter: {uploaded_filenames}")
+            # Load all workspace images from S3 to Code Interpreter
+            loaded_images = _load_workspace_images_to_ci(code_interpreter, user_id, session_id)
+            if loaded_images:
+                logger.info(f"Loaded {len(loaded_images)} image(s) from workspace: {loaded_images}")
 
             # Ensure source file is in Code Interpreter (load from S3 if needed)
             source_ci_path = doc_manager.ensure_file_in_ci(code_interpreter, source_filename)
@@ -909,7 +770,9 @@ print(f"Document modified and saved: {output_ci_path}")
                 "status": "success",
                 "metadata": {
                     "filename": output_filename,
-                    "tool_type": "word_document"
+                    "tool_type": "word_document",
+                    "user_id": user_id,
+                    "session_id": session_id
                 }
             }
 
@@ -1123,7 +986,10 @@ def read_word_document(
                 "filename": document_filename,
                 "s3_key": doc_manager.get_s3_key(document_filename),
                 "size_kb": doc_info['size_kb'],
-                "last_modified": doc_info['last_modified']
+                "last_modified": doc_info['last_modified'],
+                "tool_type": "word_document",
+                "user_id": user_id,
+                "session_id": session_id
             }
         }
 
